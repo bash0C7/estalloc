@@ -847,7 +847,6 @@ est_usable_size(ESTALLOC *est, void *ptr)
 }
 
 
-#if defined(ESTALLOC_DEBUG)
 //================================================================
 /*! statistics
 
@@ -880,6 +879,7 @@ est_take_statistics(ESTALLOC *est)
 }
 
 
+#if defined(ESTALLOC_DEBUG)
 //================================================================
 /*! Record current memory usage for profiling
 
