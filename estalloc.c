@@ -223,6 +223,17 @@ static void take_profile(ESTALLOC *est);
 # define PROFILE()
 #endif
 
+#define ENTER_CRITICAL(est) do {           \
+    ESTALLOC * _est_ = (est);              \
+    if (_est_->enter_critical)             \
+      _est_->enter_critical();             \
+  } while(0)
+#define EXIT_CRITICAL(est)  do {           \
+    ESTALLOC * _est_ = (est);              \
+    if (_est_->exit_critical)              \
+      _est_->exit_critical();              \
+  } while(0)
+
 
 //================================================================
 /*! Number of leading zeros. 16bit version.
@@ -374,7 +385,9 @@ split_block(FREE_BLOCK *target, ESTALLOC_MEMSIZE_T size)
   FREE_BLOCK *split = (FREE_BLOCK *)((uint8_t *)target + size);
 
   split->size = BLOCK_SIZE(target) - size;
+  assert(BLOCK_SIZE(split) != 0);
   target->size = size | (target->size & ALIGNMENT_MASK);  // copy a size with flags.
+  assert(BLOCK_SIZE(target) != 0);
 
   return split;
 }
@@ -394,6 +407,7 @@ void merge_block(FREE_BLOCK *target, FREE_BLOCK *next)
 
   // merge target and next
   target->size += BLOCK_SIZE(next);    // copy a size but save flags.
+  assert(BLOCK_SIZE(target) != 0);
 }
 
 
@@ -472,6 +486,23 @@ est_cleanup(ESTALLOC *est)
 
 
 //================================================================
+/*! set critical section callbacks for thread safety
+
+  @param  est    Pointer to ESTALLOC.
+  @param  enter  Function to enter critical section (disable interrupts/acquire lock).
+  @param  exit   Function to exit critical section (enable interrupts/release lock).
+  @note   Must be called during initialization, before any concurrent access.
+          This function itself is not thread-safe.
+*/
+void
+est_set_critical_section(ESTALLOC *est, void (*enter)(void), void (*exit_func)(void))
+{
+  est->enter_critical = enter;
+  est->exit_critical = exit_func;
+}
+
+
+//================================================================
 /*! allocate memory
 
   @param  est     Pointer to ESTALLOC.
@@ -493,6 +524,8 @@ est_malloc(ESTALLOC *est, unsigned int size)
   if ((uint8_t *)BPOOL_END(pool) - alloc_size < (uint8_t *)BPOOL_TOP(pool)) {
     return NULL; // request size is too large.
   }
+
+  ENTER_CRITICAL(est);
 
   FREE_BLOCK *target;
   unsigned int fli, sli;
@@ -540,6 +573,7 @@ est_malloc(ESTALLOC *est, unsigned int size)
   }
 
   // else out of memory
+  EXIT_CRITICAL(est);
   return NULL;
 
  FOUND_FLI_SLI:
@@ -548,11 +582,13 @@ est_malloc(ESTALLOC *est, unsigned int size)
   target = pool->free_blocks[index];
   //assert(target != NULL);
   if (target == NULL) {
+    EXIT_CRITICAL(est);
     return NULL;
   }
 
  FOUND_TARGET_BLOCK:
   if ((uint8_t *)target + alloc_size > (uint8_t *)BPOOL_END(pool)) {
+    EXIT_CRITICAL(est);
     return NULL; // Check pool boundary.
   }
   assert(BLOCK_SIZE(target) >= alloc_size);
@@ -589,6 +625,7 @@ est_malloc(ESTALLOC *est, unsigned int size)
 
   PROFILE();
 
+  EXIT_CRITICAL(est);
   return (uint8_t *)target + sizeof(USED_BLOCK);
 }
 
@@ -606,6 +643,8 @@ est_permalloc(ESTALLOC *est, unsigned int size)
 {
   MEMORY_POOL *pool = (MEMORY_POOL *)est;
   ESTALLOC_MEMSIZE_T alloc_size = size + (-size & ALIGNMENT_MASK);
+
+  ENTER_CRITICAL(est);
 
   // find the tail block
   FREE_BLOCK *tail = BPOOL_TOP(pool);
@@ -644,9 +683,11 @@ est_permalloc(ESTALLOC *est, unsigned int size)
 #endif
   }
 
+  EXIT_CRITICAL(est);
   return (uint8_t *)tail + sizeof(USED_BLOCK);
 
  FALLBACK:
+  EXIT_CRITICAL(est);
   return est_malloc(est, size);
 }
 
@@ -688,36 +729,48 @@ est_free(ESTALLOC *est, void *ptr)
 
   if (ptr == NULL) return;
 
+  ENTER_CRITICAL(est);
+
 #if defined(ESTALLOC_DEBUG)
   {
     FREE_BLOCK *target = BLOCK_ADRS(ptr);
     if (target < (FREE_BLOCK *)BPOOL_TOP(pool) || target > (FREE_BLOCK *)BPOOL_END(pool)) {
       est->error_message = "est_free(): Outside memory pool address was specified.\n";
+      EXIT_CRITICAL(est);
       return;
     }
     FREE_BLOCK *block = BPOOL_TOP(pool);
     while(1) {
       if (block == target ) break;
       if (PHYS_NEXT(block) >= BPOOL_END(pool) ) break;
+      if (BLOCK_SIZE(block) == 0) {
+        EXIT_CRITICAL(est);
+        assert(!"est_free(): heap corruption detected (block size is zero)");
+        return; // for NDEBUG builds
+      }
       block = PHYS_NEXT(block);
     }
     if (block == target) {
       // Found target block.
       if (IS_FREE_BLOCK(block)) {
         est->error_message = "est_free(): double free detected.\n";
+        EXIT_CRITICAL(est);
         return;
       }
       if (PHYS_NEXT(block) >= BPOOL_END(pool)) {  // reach to sentinel
         est->error_message = "est_free(): permalloc address was specified.\n";
+        EXIT_CRITICAL(est);
         return;
       }
     } else {
       // Not found target block.
       if (block < target) {
         est->error_message = "est_free(): permalloc address was specified.\n";
+        EXIT_CRITICAL(est);
         return;
       }
       est->error_message = "est_free(): Illegal address.\n";
+      EXIT_CRITICAL(est);
       return;
     }
     char *p = (char *)ptr;
@@ -755,6 +808,8 @@ est_free(ESTALLOC *est, void *ptr)
   add_free_block( pool, target);
 
   PROFILE();
+
+  EXIT_CRITICAL(est);
 }
 
 
@@ -782,6 +837,8 @@ est_realloc(ESTALLOC *est, void *ptr, unsigned int size)
   // check minimum alloc size.
   if (alloc_size < ESTALLOC_MIN_MEMORY_BLOCK_SIZE ) alloc_size = ESTALLOC_MIN_MEMORY_BLOCK_SIZE;
 
+  ENTER_CRITICAL(est);
+
   // expand? part1.
   // next phys block is free and enough size?
   if (alloc_size > BLOCK_SIZE(target)) {
@@ -801,6 +858,7 @@ est_realloc(ESTALLOC *est, void *ptr, unsigned int size)
   } else {
     SET_PREV_USED(next);
     PROFILE();
+    EXIT_CRITICAL(est);
     return ptr;
   }
 
@@ -813,16 +871,22 @@ est_realloc(ESTALLOC *est, void *ptr, unsigned int size)
   }
   add_free_block(pool, release);
   PROFILE();
+  EXIT_CRITICAL(est);
   return ptr;
 
   // expand part2.
   // new alloc and copy
  ALLOC_AND_COPY: {
+    // Save copy_size before releasing the lock.
+    // Release the lock before calling est_malloc to avoid recursive lock acquisition,
+    // since est_malloc acquires the lock internally.
+    // NOTE: caller must not share ownership of ptr across threads.
+    ESTALLOC_MEMSIZE_T copy_size = BLOCK_SIZE(target) - sizeof(USED_BLOCK);
+    EXIT_CRITICAL(est);
     void *new_ptr = est_malloc(est, size);
     if (new_ptr == NULL) return NULL;  // ENOMEM
 
-    // At this point, BLOCK_SIZE(target) is new alloc size.
-    for (unsigned int i = 0; i < BLOCK_SIZE(target) - sizeof(USED_BLOCK); i++) {
+    for (unsigned int i = 0; i < copy_size; i++) {
       ((uint8_t *)new_ptr)[i] = ((uint8_t *)ptr)[i];
     }
     est_free(est, ptr);
@@ -857,6 +921,9 @@ void
 est_take_statistics(ESTALLOC *est)
 {
   MEMORY_POOL *pool = (MEMORY_POOL *)est;
+
+  ENTER_CRITICAL(est);
+
   USED_BLOCK *block = BPOOL_TOP(pool);
   uint32_t flag_used_free = IS_USED_BLOCK(block);
 
@@ -877,6 +944,8 @@ est_take_statistics(ESTALLOC *est)
     }
     block = PHYS_NEXT(block);
   }
+
+  EXIT_CRITICAL(est);
 }
 
 

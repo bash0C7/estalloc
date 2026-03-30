@@ -78,6 +78,8 @@ typedef struct ESTALLOC {
   ESTALLOC_STAT stat;
   ESTALLOC_PROF prof;
   const char *error_message;
+  void (*enter_critical)(void);
+  void (*exit_critical)(void);
 #if ESTALLOC_ALIGNMENT == 8
   char padding[4];
 #endif
@@ -87,6 +89,8 @@ typedef struct ESTALLOC {
 typedef struct ESTALLOC {
   ESTALLOC_STAT stat;
   char *error_message;
+  void (*enter_critical)(void);
+  void (*exit_critical)(void);
 #if ESTALLOC_ALIGNMENT == 8
   char padding[4];
 #endif
@@ -95,6 +99,7 @@ typedef struct ESTALLOC {
 
 ESTALLOC *est_init(void *ptr, unsigned int size);
 void est_cleanup(ESTALLOC *est);
+void est_set_critical_section(ESTALLOC *est, void (*enter)(void), void (*exit)(void));
 
 void *est_permalloc(ESTALLOC *est, unsigned int size);
 void *est_malloc(ESTALLOC *est, unsigned int size);

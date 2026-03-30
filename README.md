@@ -19,6 +19,7 @@ The source code was adapted from mruby/c and refactored into a standalone, gener
 - **Configurable**: Supports different alignment options (4-byte and 8-byte)
 - **Embedded-Friendly**: Optimized for 16-bit and 32-bit architectures
 - **Memory Pool Based**: Uses pre-allocated memory pools for management
+- **Thread Safety**: Optional critical section callbacks for use in RTOS or interrupt-driven environments
 - **Debug Support**: Optional debugging features for memory leak detection and pool health checks
 
 ## API Reference
@@ -32,6 +33,7 @@ ESTALLOC provides the following memory management functions:
 - `est_calloc(ESTALLOC *est, unsigned int nmemb, unsigned int size)`: Allocate zero-initialized memory
 - `est_permalloc(ESTALLOC *est, unsigned int size)`: Allocate permanent (non-freeable) memory
 - `est_usable_size(ESTALLOC *est, void *ptr)`: Get usable size of allocated memory block
+- `est_set_critical_section(ESTALLOC *est, void (*enter)(void), void (*exit)(void))`: Register callbacks for wrapping critical sections (see [Thread Safety](#thread-safety))
 
 ### Debug Functions
 
@@ -76,6 +78,40 @@ When compiled with `ESTALLOC_PRINT_DEBUG` defined:
 
 - `est_fprint_pool_header(ESTALLOC *est, FILE *fp)`: Print memory pool header information
 - `est_fprint_memory_block(ESTALLOC *est, FILE *fp)`: Print detailed memory block information
+
+## Thread Safety
+
+ESTALLOC is not thread-safe by default. To enable thread safety, register enter/exit callbacks via `est_set_critical_section()`.
+The callbacks wrap each allocator operation in a critical section provided by the platform.
+
+- Must be called during initialization, before any concurrent access.
+- `est_set_critical_section()` itself is not thread-safe.
+- Passing `NULL` for both callbacks disables critical section protection (default behavior).
+
+Example using pico-sdk:
+
+```c
+#include <pico/critical_section.h>
+
+static critical_section_t heap_critsec;
+
+static void heap_enter_critical(void)
+{
+  critical_section_enter_blocking(&heap_critsec);
+}
+
+static void heap_exit_critical(void)
+{
+  critical_section_exit(&heap_critsec);
+}
+
+int main(void)
+{
+  ESTALLOC *est = est_init(mem, bytes);
+  critical_section_init(&heap_critsec); // from pico-sdk
+  est_set_critical_section(est, heap_enter_critical, heap_exit_critical);
+}
+```
 
 ## Usage Example
 

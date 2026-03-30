@@ -77,6 +77,317 @@ check_memory_content(void *ptr, size_t size, unsigned char value)
   return 1;
 }
 
+// ================================================================
+// Critical section test infrastructure
+// ================================================================
+
+static int cs_enter_count = 0;
+static int cs_exit_count = 0;
+
+static void
+cs_enter(void)
+{
+  cs_enter_count++;
+}
+
+static void
+cs_exit_cb(void)
+{
+  cs_exit_count++;
+}
+
+static void
+cs_reset(void)
+{
+  cs_enter_count = 0;
+  cs_exit_count = 0;
+}
+
+// Test: est_set_critical_section registers and clears callbacks
+static int
+test_cs_registration(void)
+{
+  printf("--- test_cs_registration ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  if (est->enter_critical != cs_enter || est->exit_critical != cs_exit_cb) {
+    printf("FAILED: callbacks not registered\n");
+    free(mem);
+    return 1;
+  }
+  est_set_critical_section(est, NULL, NULL);
+  if (est->enter_critical != NULL || est->exit_critical != NULL) {
+    printf("FAILED: callbacks not cleared\n");
+    free(mem);
+    return 1;
+  }
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+
+// Test: NULL callbacks do not crash
+static int
+test_cs_null_callbacks(void)
+{
+  printf("--- test_cs_null_callbacks ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+
+  void *ptr = est_malloc(est, 64);
+  if (ptr == NULL) {
+    printf("FAILED: malloc with NULL callbacks returned NULL\n");
+    free(mem);
+    return 1;
+  }
+  void *new_ptr = est_realloc(est, ptr, 128);
+  if (new_ptr == NULL) {
+    est_free(est, ptr);
+  } else {
+    est_free(est, new_ptr);
+  }
+#if defined(ESTALLOC_DEBUG)
+  est_take_statistics(est);
+#endif
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+
+// Test: malloc calls enter/exit exactly once on success
+static int
+test_cs_malloc(void)
+{
+  printf("--- test_cs_malloc ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  cs_reset();
+
+  void *ptr = est_malloc(est, 64);
+  if (ptr == NULL) {
+    printf("FAILED: malloc returned NULL\n");
+    free(mem);
+    return 1;
+  }
+  if (cs_enter_count != 1 || cs_exit_count != 1) {
+    printf("FAILED: enter=%d exit=%d (expected 1, 1)\n", cs_enter_count, cs_exit_count);
+    free(mem);
+    return 1;
+  }
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+
+// Test: free calls enter/exit exactly once
+static int
+test_cs_free(void)
+{
+  printf("--- test_cs_free ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+  void *ptr = est_malloc(est, 64);
+  if (ptr == NULL) {
+    printf("FAILED: initial malloc returned NULL\n");
+    free(mem);
+    return 1;
+  }
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  cs_reset();
+
+  est_free(est, ptr);
+  if (cs_enter_count != 1 || cs_exit_count != 1) {
+    printf("FAILED: enter=%d exit=%d (expected 1, 1)\n", cs_enter_count, cs_exit_count);
+    free(mem);
+    return 1;
+  }
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+
+// Test: malloc OOM still calls exit (critical section is balanced)
+static int
+test_cs_malloc_oom(void)
+{
+  printf("--- test_cs_malloc_oom ---\n");
+  void *mem = malloc(1024);
+  ESTALLOC *est = est_init(mem, 1024);
+  // Fill pool
+  while (est_malloc(est, 64) != NULL) {}
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  cs_reset();
+
+  void *ptr = est_malloc(est, 64);
+  if (ptr != NULL) {
+    printf("SKIPPED: pool not full\n");
+    free(mem);
+    return 0;
+  }
+  if (cs_enter_count == 0) {
+    printf("FAILED: critical section not called on OOM\n");
+    free(mem);
+    return 1;
+  }
+  if (cs_enter_count != cs_exit_count) {
+    printf("FAILED: critical section not balanced on OOM (enter=%d exit=%d)\n",
+           cs_enter_count, cs_exit_count);
+    free(mem);
+    return 1;
+  }
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+
+// Test: permalloc critical section is balanced
+static int
+test_cs_permalloc(void)
+{
+  printf("--- test_cs_permalloc ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  cs_reset();
+
+  void *ptr = est_permalloc(est, 64);
+  if (ptr == NULL) {
+    printf("SKIPPED: permalloc returned NULL\n");
+    free(mem);
+    return 0;
+  }
+  if (cs_enter_count == 0 || cs_enter_count != cs_exit_count) {
+    printf("FAILED: enter=%d exit=%d (expected balanced, >0)\n", cs_enter_count, cs_exit_count);
+    free(mem);
+    return 1;
+  }
+  printf("PASSED (enter=%d exit=%d)\n", cs_enter_count, cs_exit_count);
+  free(mem);
+  return 0;
+}
+
+// Test: realloc critical section is balanced (covers in-place and alloc-copy paths)
+static int
+test_cs_realloc(void)
+{
+  printf("--- test_cs_realloc ---\n");
+  int failures = 0;
+
+  // in-place shrink path
+  {
+    void *mem = malloc(4096);
+    ESTALLOC *est = est_init(mem, 4096);
+    void *ptr = est_malloc(est, 256);
+    if (ptr == NULL) { printf("FAILED: initial malloc returned NULL\n"); free(mem); return 1; }
+    fill_memory(ptr, 256, 0xAA);
+    est_set_critical_section(est, cs_enter, cs_exit_cb);
+    cs_reset();
+    void *new_ptr = est_realloc(est, ptr, 64);
+    if (new_ptr == NULL) {
+      printf("  shrink: SKIPPED\n");
+    } else {
+      if (cs_enter_count == 0 || cs_enter_count != cs_exit_count) {
+        printf("  shrink: FAILED (enter=%d exit=%d)\n", cs_enter_count, cs_exit_count);
+        failures++;
+      } else {
+        printf("  shrink: PASSED (enter=%d exit=%d)\n", cs_enter_count, cs_exit_count);
+      }
+      est_free(est, new_ptr);
+    }
+    free(mem);
+  }
+
+  // alloc-and-copy path: blocker prevents in-place expansion
+  {
+    void *mem = malloc(4096);
+    ESTALLOC *est = est_init(mem, 4096);
+    void *blocker = est_malloc(est, 128);
+    void *ptr = est_malloc(est, 64);
+    if (ptr == NULL || blocker == NULL) {
+      printf("  alloc-copy: SKIPPED (initial malloc failed)\n");
+    } else {
+      fill_memory(ptr, 64, 0xBB);
+      est_set_critical_section(est, cs_enter, cs_exit_cb);
+      cs_reset();
+      // Request larger than blocker allows in-place
+      void *new_ptr = est_realloc(est, ptr, 2048);
+      if (new_ptr == NULL) {
+        // OOM: still must be balanced
+        if (cs_enter_count == 0 || cs_enter_count != cs_exit_count) {
+          printf("  alloc-copy (OOM): FAILED (enter=%d exit=%d)\n",
+                 cs_enter_count, cs_exit_count);
+          failures++;
+        } else {
+          printf("  alloc-copy (OOM): PASSED (enter=%d exit=%d)\n",
+                 cs_enter_count, cs_exit_count);
+        }
+      } else {
+        if (cs_enter_count == 0 || cs_enter_count != cs_exit_count) {
+          printf("  alloc-copy: FAILED (enter=%d exit=%d)\n",
+                 cs_enter_count, cs_exit_count);
+          failures++;
+        } else {
+          printf("  alloc-copy: PASSED (enter=%d exit=%d)\n",
+                 cs_enter_count, cs_exit_count);
+        }
+        est_free(est, new_ptr);
+      }
+      est_free(est, blocker);
+    }
+    free(mem);
+  }
+
+  return failures;
+}
+
+// Test: take_statistics calls enter/exit exactly once
+#if defined(ESTALLOC_DEBUG)
+static int
+test_cs_statistics(void)
+{
+  printf("--- test_cs_statistics ---\n");
+  void *mem = malloc(4096);
+  ESTALLOC *est = est_init(mem, 4096);
+  est_set_critical_section(est, cs_enter, cs_exit_cb);
+  cs_reset();
+
+  est_take_statistics(est);
+  if (cs_enter_count != 1 || cs_exit_count != 1) {
+    printf("FAILED: enter=%d exit=%d (expected 1, 1)\n", cs_enter_count, cs_exit_count);
+    free(mem);
+    return 1;
+  }
+  printf("PASSED\n");
+  free(mem);
+  return 0;
+}
+#endif
+
+static int
+run_critical_section_tests(void)
+{
+  printf("\n=== Critical Section Tests ===\n");
+  int failures = 0;
+  failures += test_cs_registration();
+  failures += test_cs_null_callbacks();
+  failures += test_cs_malloc();
+  failures += test_cs_free();
+  failures += test_cs_malloc_oom();
+  failures += test_cs_permalloc();
+  failures += test_cs_realloc();
+#if defined(ESTALLOC_DEBUG)
+  failures += test_cs_statistics();
+#endif
+  printf("=== Critical Section Tests: %s (%d failure(s)) ===\n\n",
+         failures == 0 ? "PASSED" : "FAILED", failures);
+  return failures;
+}
+
+// ================================================================
+
 #ifdef ESTALLOC_DEBUG
 // Print the meaning of sanity check errors
 static void
@@ -126,6 +437,11 @@ log_operation(enum operation_type op, void *ptr, size_t size, int result)
 int
 main()
 {
+  if (run_critical_section_tests() != 0) {
+    fprintf(stderr, "Critical section tests failed\n");
+    return 1;
+  }
+
   // print size of structures
 #if defined(ESTALLOC_DEBUG)
   fprintf(stderr, "sizeof(ESTALLOC_PROF): %zu\n", sizeof(ESTALLOC_PROF));
@@ -360,4 +676,3 @@ main()
   printf("Test completed.\n");
   return 0;
 }
-
