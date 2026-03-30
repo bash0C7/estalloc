@@ -56,12 +56,12 @@ jobs:
         sudo apt-get install -y gcc-multilib g++-multilib
 
     - name: Build ${{ matrix.test }}
-      run: make test/${{ matrix.test }}
+      run: make build/${{ matrix.test }}
 
     - name: Run ${{ matrix.test }}
       run: |
         mkdir -p log
-        ./test/${{ matrix.test }} > log/${{ matrix.test }}.log 2>&1
+        ./build/${{ matrix.test }} > log/${{ matrix.test }}.log 2>&1
         cat log/${{ matrix.test }}.log
 
     - name: Check test result

@@ -16,7 +16,7 @@ LDFLAGS =
 DEBUG_FLAGS = -DESTALLOC_DEBUG -DESTALLOC_PRINT_DEBUG
 
 # Output directories
-OUTDIR = test
+OUTDIR = build
 LOGDIR = log
 
 # All test configurations
