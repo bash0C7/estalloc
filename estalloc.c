@@ -223,8 +223,16 @@ static void take_profile(ESTALLOC *est);
 # define PROFILE()
 #endif
 
-#define ENTER_CRITICAL(est) do { if ((est)->enter_critical) (est)->enter_critical(); } while(0)
-#define EXIT_CRITICAL(est)  do { if ((est)->exit_critical)  (est)->exit_critical();  } while(0)
+#define ENTER_CRITICAL(est) do {           \
+    ESTALLOC * _est_ = (est);              \
+    if (_est_->enter_critical)             \
+      _est_->enter_critical();             \
+  } while(0)
+#define EXIT_CRITICAL(est)  do {           \
+    ESTALLOC * _est_ = (est);              \
+    if (_est_->exit_critical)              \
+      _est_->exit_critical();              \
+  } while(0)
 
 
 //================================================================
