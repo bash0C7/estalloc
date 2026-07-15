@@ -81,7 +81,7 @@ typedef struct ESTALLOC {
   const char *error_message;
   void (*enter_critical)(void);
   void (*exit_critical)(void);
-#if ESTALLOC_ALIGNMENT == 8
+#if ESTALLOC_ALIGNMENT == 8 && defined(PLATFORM_64BIT)
   char padding[4];
 #endif
 } ESTALLOC;
@@ -92,7 +92,7 @@ typedef struct ESTALLOC {
   char *error_message;
   void (*enter_critical)(void);
   void (*exit_critical)(void);
-#if ESTALLOC_ALIGNMENT == 8
+#if ESTALLOC_ALIGNMENT == 8 && defined(PLATFORM_64BIT)
   char padding[4];
 #endif
 } ESTALLOC;
