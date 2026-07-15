@@ -59,6 +59,7 @@ typedef struct ESTALLOC_STAT {
   ESTALLOC_MEMSIZE_T total;   // total memory
   ESTALLOC_MEMSIZE_T used;    // used memory
   ESTALLOC_MEMSIZE_T free;    // free memory
+  ESTALLOC_MEMSIZE_T max_free;// largest free block
   ESTALLOC_MEMSIZE_T frag;    // memory fragmentation count
 } ESTALLOC_STAT;
 

@@ -929,19 +929,29 @@ est_take_statistics(ESTALLOC *est)
   est->stat.total = pool->size;
   est->stat.used = 0;
   est->stat.free = 0;
+  est->stat.max_free = 0;
   est->stat.frag = -1;
 
   while (block < (USED_BLOCK *)BPOOL_END(pool)) {
+    ESTALLOC_MEMSIZE_T block_size = BLOCK_SIZE(block);
+    USED_BLOCK *next = PHYS_NEXT(block);
+    if (block_size == 0 || next <= block || next > (USED_BLOCK *)BPOOL_END(pool)) {
+      est->error_message = "broken memory block chain";
+      break;
+    }
     if (IS_FREE_BLOCK(block)) {
-      est->stat.free += BLOCK_SIZE(block);
+      est->stat.free += block_size;
+      if (est->stat.max_free < block_size) {
+        est->stat.max_free = block_size;
+      }
     } else {
-      est->stat.used += BLOCK_SIZE(block);
+      est->stat.used += block_size;
     }
     if (flag_used_free != IS_USED_BLOCK(block)) {
       est->stat.frag++;
       flag_used_free = IS_USED_BLOCK(block);
     }
-    block = PHYS_NEXT(block);
+    block = next;
   }
 
   EXIT_CRITICAL(est);
