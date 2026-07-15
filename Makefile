@@ -99,11 +99,19 @@ $(OUTDIR)/test_8_24_64bit_debug: $(SRCS)
 test: $(CONFIGS)
 	@mkdir -p $(LOGDIR)
 	@echo "Running all test configurations..."
-	@for config in $(CONFIGS); do \
+	@failed=0; \
+	for config in $(CONFIGS); do \
 		base=$$(basename $$config); \
 		echo "Running $$base..."; \
-		./$$config > $(LOGDIR)/$$base.log 2>&1 || echo "$$base FAILED!"; \
-	done
+		if ! ./$$config > $(LOGDIR)/$$base.log 2>&1; then \
+			echo "$$base FAILED!"; \
+			failed=1; \
+		fi; \
+	done; \
+	if [ $$failed -ne 0 ]; then \
+		echo "Some tests failed. Check $(LOGDIR)/*.log for results."; \
+		exit 1; \
+	fi
 	@echo "All tests completed. Check $(LOGDIR)/*.log for results."
 
 .PHONY: all clean test valgrind_test quick_test diff_logs save_expected
