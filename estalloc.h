@@ -89,7 +89,7 @@ typedef struct ESTALLOC {
 //typedef void ESTALLOC;
 typedef struct ESTALLOC {
   ESTALLOC_STAT stat;
-  char *error_message;
+  const char *error_message;
   void (*enter_critical)(void);
   void (*exit_critical)(void);
 #if ESTALLOC_ALIGNMENT == 8 && defined(PLATFORM_64BIT)
