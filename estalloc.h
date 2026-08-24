@@ -23,9 +23,15 @@
 extern "C" {
 #endif
 
-#if defined (__alpha__) || defined (__ia64__) || defined (__x86_64__) \
-    || defined (_WIN64) || defined (__LP64__) || defined (__LLP64__) \
-    || defined(__ppc64__) || defined(__aarch64__)
+/* PLATFORM_64BIT means "pointers are 8 bytes", so detect it from the
+ * pointer width itself instead of an architecture list: __aarch64__ is
+ * also defined on ILP32 targets (Apple watchOS arm64_32), where pointers
+ * are 4 bytes. Misdetecting there adds the LP64 padding to ESTALLOC and
+ * breaks the 8-byte alignment of sizeof(MEMORY_POOL), corrupting the
+ * TLSF free lists (SIGSEGV in remove_free_block on a real Apple Watch;
+ * the guarding asserts are compiled out under NDEBUG). <stdint.h> is
+ * included above. */
+#if UINTPTR_MAX > 0xFFFFFFFFu
 # define PLATFORM_64BIT
 #endif
 
